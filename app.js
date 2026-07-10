@@ -430,19 +430,27 @@ function renderMensalComparativoChart(nfs){
    RANKINGS (lista com scroll, clicável para filtrar cruzado)
    ============================================================ */
 function renderRankingClientes(nfsFiltradasCruzado){
-  // Ranking baseado em NFs de 2026 (faturamento real)
-  const nfs2026 = allNFs.filter(n => anoDe(n.data_emissao) === 2026 && (!filtro.cliente || n.cliente === filtro.cliente));
+  // Ranking unificado: NFs 2026 + Projetos 2026 (para capturar novos lançamentos sem NF)
   const porCliente = {};
+
+  // Soma NFs de 2026
+  const nfs2026 = allNFs.filter(n => anoDe(n.data_emissao) === 2026 && (!filtro.cliente || n.cliente === filtro.cliente));
   nfs2026.forEach(n => {
     const c = n.cliente || 'Sem cliente';
     porCliente[c] = (porCliente[c]||0) + (n.valor||0);
   });
 
-  // Inclui também projetos de 2026 com valor que não aparecem nas NFs (novos lançamentos)
+  // Soma Projetos de 2026 que NÃO possuem NF correspondente (novos lançamentos)
+  // Estratégia: se o cliente já tem NF, não duplica; se não tem, usa o valor do projeto
+  const clientesComNF = new Set(nfs2026.map(n => n.cliente).filter(Boolean));
   const projetos2026 = allProjetos.filter(p => anoDe(p.data_pedido) === 2026 && (!filtro.cliente || p.cliente === filtro.cliente));
   projetos2026.forEach(p => {
-    const c = p.cliente || 'Sem cliente';
-    if(!porCliente[c] && p.valor) porCliente[c] = 0; // garante que aparece mesmo sem NF
+    if(!p.valor || !p.cliente) return;
+    const c = p.cliente;
+    if(!clientesComNF.has(c)){
+      // Cliente sem nenhuma NF — soma pelo valor do projeto
+      porCliente[c] = (porCliente[c]||0) + p.valor;
+    }
   });
 
   const totalGeral = Object.values(porCliente).reduce((s,v)=>s+v,0);
@@ -899,11 +907,25 @@ async function saveRow(id, tr, btn){
 
 async function deleteRow(id){
   if(!confirm('Tem certeza que deseja apagar este lançamento? Esta ação não pode ser desfeita.')) return;
+
   const { error } = await db.from('projetos').delete().eq('id', id);
-  if(error){ alert('Erro ao apagar: ' + error.message); return; }
-  // Remove da lista local e atualiza a tela
+  if(error){
+    alert('Erro ao apagar: ' + error.message);
+    return;
+  }
+
+  // Verifica se realmente foi deletado
+  const { data: check } = await db.from('projetos').select('id').eq('id', id).single();
+  if(check){
+    alert('Não foi possível apagar este registro. Verifique as permissões no Supabase (RLS).');
+    return;
+  }
+
+  // Remove das listas locais
   bdAllRows = bdAllRows.filter(r => r.id !== id);
   allProjetos = allProjetos.filter(r => r.id !== id);
+
+  // Atualiza a tela
   renderBaseDados();
   renderAll(); // atualiza gráficos e KPIs
 }
