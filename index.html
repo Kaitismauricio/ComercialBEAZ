@@ -242,6 +242,7 @@
   <div class="tabbar">
     <button class="tab-btn active" data-tab="tab-dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="tab-basedados">Base de Dados</button>
+    <button class="tab-btn" data-tab="tab-notas">Notas Fiscais</button>
   </div>
 
   <main>
@@ -424,8 +425,13 @@
             <option value="CANCELADO">Cancelado</option>
           </select>
         </div>
-        <div class="field-sm"><label>Valor (R$)</label><input type="number" step="0.01" id="f-valor"></div>
-        <div class="field-sm"><label>Empresa</label><input type="text" id="f-empresa" placeholder="ex: BeaZ"></div>
+        <div class="field-sm"><label>Valor (R$)</label><input type="text" id="f-valor" placeholder="0,00" inputmode="numeric" autocomplete="off"></div>
+        <div class="field-sm"><label>Empresa</label>
+          <select id="f-empresa">
+            <option value="BeaZ">BeaZ</option>
+            <option value="We Americana">We Americana</option>
+          </select>
+        </div>
         <div class="field-sm"><label>NF (número ou texto)</label><input type="text" id="f-nf"></div>
       </div>
       <div class="modal-actions">
