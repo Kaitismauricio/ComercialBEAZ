@@ -80,10 +80,26 @@ function destroyChart(id){
 }
 
 /* ============================================================
-   AUTENTICAÇÃO
+   MÁSCARA DE MOEDA
    ============================================================ */
+function aplicarMascaraMoeda(input){
+  input.addEventListener('input', function(){
+    let v = this.value.replace(/\D/g,'');
+    if(!v){ this.value = ''; return; }
+    v = (parseInt(v,10)/100).toFixed(2);
+    this.value = v.replace('.',',').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  });
+}
+function parseMoeda(str){
+  if(!str) return null;
+  const v = parseFloat(String(str).replace(/\./g,'').replace(',','.'));
+  return isNaN(v) ? null : v;
+}
 const loginScreen = document.getElementById('login-screen');
 const appScreen = document.getElementById('app');
+
+// Máscara de moeda no campo valor do modal
+aplicarMascaraMoeda(document.getElementById('f-valor'));
 
 async function checkSession(){
   const { data } = await db.auth.getSession();
@@ -128,6 +144,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
     if(btn.dataset.tab === 'tab-basedados'){ loadBaseDados(); }
+    if(btn.dataset.tab === 'tab-notas'){ loadNotasFiscais(); }
   });
 });
 
@@ -137,7 +154,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 async function loadDashboard(){
   try{
     allProjetos = await fetchAllRows('projetos', 'id, status, valor, data_pedido, data_entrega, cliente, num_produto, descricao_empresa, qtd_pedido');
-    allNFs = await fetchAllRows('notas_fiscais', 'valor, data_emissao, cliente');
+    allNFs = await fetchAllRows('notas_fiscais', 'id, valor, data_emissao, cliente, nf_numero, tipo_nota, descricao, qtd_entregue, empresa, num_pedido');
   } catch(err){
     document.getElementById('kpi-grid').innerHTML = `<div class="empty-state">Erro ao carregar dados: ${err.message}</div>`;
     return;
@@ -245,12 +262,13 @@ function renderKPIs(projetosFiltradosCruzado, nfsFiltradasCruzado){
 
   const valorTotalAno2026 = nfs2026.reduce((s,n)=>s+(n.valor||0),0);
   const diferencaReais = valorPeriodo2026 - valorPeriodo2025;
-  const variacaoTexto = pctVariacao === null
+  const pctVariacaoFinal = valorPeriodo2025 > 0 ? ((valorPeriodo2026 - valorPeriodo2025)/valorPeriodo2025*100) : null;
+  const variacaoTexto = pctVariacaoFinal === null
     ? `sem dado de 2025 no período (${periodoLabel})`
-    : `${pctVariacao>=0?'▲ +':'▼ '}${pctVariacao.toFixed(1)}% · ${diferencaReais>=0?'+':''}${formatCurrency(diferencaReais)} vs ${periodoLabel}/2025`;
-  const variacaoCor = pctVariacao === null ? 'var(--text-muted)' : (pctVariacao>=0 ? 'var(--ok)' : 'var(--danger)');
+    : `${pctVariacaoFinal>=0?'▲ +':'▼ '}${pctVariacaoFinal.toFixed(1)}% · ${diferencaReais>=0?'+':''}${formatCurrency(diferencaReais)} vs ${periodoLabel}/2025`;
+  const variacaoCor = pctVariacaoFinal === null ? 'var(--text-muted)' : (pctVariacaoFinal>=0 ? 'var(--ok)' : 'var(--danger)');
 
-  // ---- Faturamento médio mensal 2026 (meses com faturamento > 0) ----
+  // ---- Faturamento médio mensal 2026 (apenas NFs) ----
   const mesesComFaturamento2026 = Object.values(faturamentoPorMes2026).filter(v => v > 0).length;
   const faturamentoMedioMensal2026 = mesesComFaturamento2026 > 0 ? valorTotalAno2026 / mesesComFaturamento2026 : 0;
 
@@ -260,7 +278,7 @@ function renderKPIs(projetosFiltradosCruzado, nfsFiltradasCruzado){
   document.getElementById('kpi-grid').innerHTML = `
     ${kpiCardSub(`Faturamento Acumulado 2026 (${periodoLabel})`, formatCurrency(valorPeriodo2026), variacaoTexto, variacaoCor)}
     ${kpiCard(labelMesCard, formatCurrency(faturadoMesReferencia), null, 'var(--accent)')}
-    ${kpiCard('Faturamento Médio Mensal 2026', formatCurrency(faturamentoMedioMensal2026), `Baseado em ${mesesComFaturamento2026} mês${mesesComFaturamento2026!==1?'es':''} com faturamento`, 'var(--ok)')}
+    ${kpiCard('Faturamento Médio Mensal 2026', formatCurrency(faturamentoMedioMensal2026), `Baseado em ${mesesComFaturamento2026} mês${mesesComFaturamento2026!==1?'es':''} com NFs`, 'var(--ok)')}
     ${kpiCard('Clientes Ativos 2026', clientesAtivos2026.toLocaleString('pt-BR'), 'Com ao menos 1 NF emitida', 'var(--ok)')}
     ${kpiCard('Projetos Atrasados 2026', atrasados.toLocaleString('pt-BR'), null, 'var(--danger)')}
     ${kpiCard('Valor em Aberto 2026 (a faturar)', formatCurrency(valorEmAberto), null, 'var(--warn)')}
@@ -430,27 +448,12 @@ function renderMensalComparativoChart(nfs){
    RANKINGS (lista com scroll, clicável para filtrar cruzado)
    ============================================================ */
 function renderRankingClientes(nfsFiltradasCruzado){
-  // Ranking unificado: NFs 2026 + Projetos 2026 (para capturar novos lançamentos sem NF)
-  const porCliente = {};
-
-  // Soma NFs de 2026
+  // Ranking baseado somente em NFs de 2026
   const nfs2026 = allNFs.filter(n => anoDe(n.data_emissao) === 2026 && (!filtro.cliente || n.cliente === filtro.cliente));
+  const porCliente = {};
   nfs2026.forEach(n => {
     const c = n.cliente || 'Sem cliente';
     porCliente[c] = (porCliente[c]||0) + (n.valor||0);
-  });
-
-  // Soma Projetos de 2026 que NÃO possuem NF correspondente (novos lançamentos)
-  // Estratégia: se o cliente já tem NF, não duplica; se não tem, usa o valor do projeto
-  const clientesComNF = new Set(nfs2026.map(n => n.cliente).filter(Boolean));
-  const projetos2026 = allProjetos.filter(p => anoDe(p.data_pedido) === 2026 && (!filtro.cliente || p.cliente === filtro.cliente));
-  projetos2026.forEach(p => {
-    if(!p.valor || !p.cliente) return;
-    const c = p.cliente;
-    if(!clientesComNF.has(c)){
-      // Cliente sem nenhuma NF — soma pelo valor do projeto
-      porCliente[c] = (porCliente[c]||0) + p.valor;
-    }
   });
 
   const totalGeral = Object.values(porCliente).reduce((s,v)=>s+v,0);
@@ -1001,7 +1004,7 @@ projetoForm.addEventListener('submit', async (e) => {
     qtd_pedido: document.getElementById('f-qtd-pedido').value ? parseFloat(document.getElementById('f-qtd-pedido').value) : null,
     data_entrega: document.getElementById('f-data-entrega').value||null,
     status: document.getElementById('f-status').value,
-    valor: document.getElementById('f-valor').value ? parseFloat(document.getElementById('f-valor').value) : null,
+    valor: parseMoeda(document.getElementById('f-valor').value),
     empresa: document.getElementById('f-empresa').value.trim()||null,
     nf_numero_original: document.getElementById('f-nf').value.trim()||null,
   };
@@ -1019,6 +1022,254 @@ projetoForm.addEventListener('submit', async (e) => {
     closeModal();
     loadDashboard();
     if(document.getElementById('tab-basedados').classList.contains('active')) loadBaseDados();
+  }, 700);
+});
+
+/* ============================================================
+   ABA "NOTAS FISCAIS" — grade com scroll, ordenação, edição,
+   exclusão, exportar CSV e modal de cadastro
+   ============================================================ */
+let nfAllRows = [];
+let nfSort = { field: 'data_emissao', dir: 'desc' };
+
+document.getElementById('nf-btn-add').addEventListener('click', () => openNewNFModal());
+document.getElementById('nf-btn-cancel').addEventListener('click', closeNFModal);
+document.getElementById('nf-modal-overlay').addEventListener('click', (e) => { if(e.target===document.getElementById('nf-modal-overlay')) closeNFModal(); });
+
+// Máscara de moeda no campo valor do modal NF
+aplicarMascaraMoeda(document.getElementById('nf-f-valor'));
+
+let nfSearchTimeout = null;
+document.getElementById('nf-search-input').addEventListener('input', () => {
+  clearTimeout(nfSearchTimeout);
+  nfSearchTimeout = setTimeout(() => renderNotasFiscais(), 250);
+});
+
+document.querySelectorAll('.nf-sortable-th').forEach(th => {
+  th.addEventListener('click', () => {
+    const field = th.dataset.field;
+    if(nfSort.field === field){
+      nfSort.dir = nfSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      nfSort = { field, dir: 'asc' };
+    }
+    document.querySelectorAll('.nf-sortable-th .sort-arrow-nf').forEach(a => a.textContent = '');
+    th.querySelector('.sort-arrow-nf').textContent = nfSort.dir === 'asc' ? '▲' : '▼';
+    renderNotasFiscais();
+  });
+});
+
+async function loadNotasFiscais(){
+  const tbody = document.getElementById('nf-tbody');
+  tbody.innerHTML = `<tr><td colspan="9" class="loading-inline">Carregando notas fiscais...</td></tr>`;
+  try {
+    nfAllRows = await fetchAllRows('notas_fiscais', 'id, valor, data_emissao, cliente, nf_numero, tipo_nota, descricao, qtd_entregue, empresa, num_pedido');
+  } catch(err) {
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Erro ao carregar: ${err.message}</td></tr>`;
+    return;
+  }
+  renderNotasFiscais();
+}
+
+function renderNotasFiscais(){
+  const tbody = document.getElementById('nf-tbody');
+  const search = document.getElementById('nf-search-input').value.trim().toLowerCase();
+
+  let rows = nfAllRows;
+  if(search){
+    rows = rows.filter(n =>
+      (n.cliente||'').toLowerCase().includes(search) ||
+      String(n.nf_numero||'').toLowerCase().includes(search)
+    );
+  }
+
+  rows = [...rows].sort((a,b) => {
+    let va = a[nfSort.field], vb = b[nfSort.field];
+    if(nfSort.field === 'valor'){ va = va||0; vb = vb||0; }
+    else { va = (va===null||va===undefined) ? '' : String(va); vb = (vb===null||vb===undefined) ? '' : String(vb); }
+    if(va < vb) return nfSort.dir === 'asc' ? -1 : 1;
+    if(va > vb) return nfSort.dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  if(rows.length === 0){
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Nenhuma nota fiscal encontrada.</td></tr>`;
+    return;
+  }
+
+  const tiposNota = ['Venda','Remessa','Devolução','Serviço','Outro'];
+  const empresas = ['BeaZ','We Americana'];
+
+  tbody.innerHTML = rows.map(n => `
+    <tr data-id="${n.id}">
+      <td>
+        <button class="edit-pencil" onclick="toggleNFRowEdit(${n.id}, this)" title="Editar linha">✎</button>
+        <button class="edit-pencil" onclick="deleteNFRow(${n.id})" title="Apagar NF" style="margin-left:4px; color:var(--danger); border-color:var(--danger);">🗑</button>
+        <span class="save-indicator">✓ salvo</span>
+      </td>
+      <td><input class="inline-input" disabled data-field="cliente" value="${escapeHtml(n.cliente||'')}"></td>
+      <td><input class="inline-input" disabled data-field="nf_numero" value="${escapeHtml(String(n.nf_numero||''))}"></td>
+      <td><input class="inline-input" disabled type="date" data-field="data_emissao" value="${n.data_emissao||''}"></td>
+      <td>
+        <select class="inline-select" disabled data-field="tipo_nota">
+          ${tiposNota.map(t => `<option value="${t}" ${n.tipo_nota===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </td>
+      <td><input class="inline-input" disabled data-field="descricao" value="${escapeHtml(n.descricao||'')}"></td>
+      <td><input class="inline-input" disabled type="number" step="0.01" data-field="qtd_entregue" value="${n.qtd_entregue??''}"></td>
+      <td style="display:flex; align-items:center; gap:4px;"><span style="color:var(--text-muted); font-size:11px;">R$</span><input class="inline-input" disabled type="number" step="0.01" data-field="valor" value="${n.valor??''}"></td>
+      <td>
+        <select class="inline-select" disabled data-field="empresa">
+          ${empresas.map(e => `<option value="${e}" ${n.empresa===e?'selected':''}>${e}</option>`).join('')}
+        </select>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function toggleNFRowEdit(id, btn){
+  const tr = btn.closest('tr');
+  const inputs = tr.querySelectorAll('[data-field]');
+  const isEditing = btn.classList.contains('editing');
+  if(!isEditing){
+    inputs.forEach(i => i.disabled = false);
+    btn.classList.add('editing');
+    btn.textContent = '💾';
+    btn.title = 'Salvar alterações';
+  } else {
+    saveNFRow(id, tr, btn);
+  }
+}
+
+async function saveNFRow(id, tr, btn){
+  const inputs = tr.querySelectorAll('[data-field]');
+  const payload = {};
+  inputs.forEach(input => {
+    let value = input.value.trim ? input.value.trim() : input.value;
+    if(['valor','qtd_entregue'].includes(input.dataset.field)) value = value === '' ? null : parseFloat(value);
+    if(value === '') value = null;
+    payload[input.dataset.field] = value;
+  });
+  btn.disabled = true;
+  const { error } = await db.from('notas_fiscais').update(payload).eq('id', id);
+  btn.disabled = false;
+  if(error){ alert('Erro ao salvar: ' + error.message); return; }
+  inputs.forEach(i => i.disabled = true);
+  btn.classList.remove('editing');
+  btn.textContent = '✎';
+  btn.title = 'Editar linha';
+  const indicator = tr.querySelector('.save-indicator');
+  indicator.classList.add('show');
+  setTimeout(() => indicator.classList.remove('show'), 1500);
+  const idx = nfAllRows.findIndex(r => r.id === id);
+  if(idx > -1) nfAllRows[idx] = { ...nfAllRows[idx], ...payload };
+  // Atualiza allNFs e gráficos
+  const idx2 = allNFs.findIndex(r => r.id === id);
+  if(idx2 > -1) allNFs[idx2] = { ...allNFs[idx2], ...payload };
+  renderAll();
+}
+
+async function deleteNFRow(id){
+  if(!confirm('Tem certeza que deseja apagar esta Nota Fiscal? Esta ação não pode ser desfeita.')) return;
+  const { error } = await db.from('notas_fiscais').delete().eq('id', id);
+  if(error){ alert('Erro ao apagar: ' + error.message); return; }
+  const { data: check } = await db.from('notas_fiscais').select('id').eq('id', id).single();
+  if(check){ alert('Não foi possível apagar este registro. Verifique as permissões no Supabase (RLS).'); return; }
+  nfAllRows = nfAllRows.filter(r => r.id !== id);
+  allNFs = allNFs.filter(r => r.id !== id);
+  renderNotasFiscais();
+  renderAll();
+}
+
+function exportarCSVNotas(){
+  if(!nfAllRows || nfAllRows.length === 0){ alert('Não há dados para exportar.'); return; }
+  const campos = ['id','cliente','nf_numero','data_emissao','tipo_nota','descricao','qtd_entregue','valor','empresa','num_pedido'];
+  const cabecalho = ['ID','Cliente','Nº NF','Data Emissão','Tipo','Descrição','Qtd Entregue','Valor (R$)','Empresa','Nº Pedido Ref.'];
+  const linhas = [cabecalho.join(';')];
+  nfAllRows.forEach(n => {
+    const linha = campos.map(c => {
+      const v = n[c] ?? '';
+      return `"${String(v).replace(/"/g,'""')}"`;
+    });
+    linhas.push(linha.join(';'));
+  });
+  const csvContent = '\uFEFF' + linhas.join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `notas_fiscais_beaz_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function openNewNFModal(){
+  document.getElementById('nf-form').reset();
+  document.getElementById('nf-f-id').value = '';
+  document.getElementById('nf-modal-title').textContent = 'Nova Nota Fiscal';
+  document.getElementById('nf-modal-sub').textContent = 'PREENCHA OS CAMPOS ABAIXO';
+  document.getElementById('nf-btn-save').textContent = 'Salvar NF';
+  document.getElementById('nf-modal-overlay').classList.add('open');
+}
+async function openEditNFModal(id){
+  const { data, error } = await db.from('notas_fiscais').select('*').eq('id', id).single();
+  if(error || !data){ alert('Não foi possível carregar esta NF.'); return; }
+  document.getElementById('nf-modal-title').textContent = 'Editar Nota Fiscal';
+  document.getElementById('nf-modal-sub').textContent = `ID ${data.id}`;
+  document.getElementById('nf-btn-save').textContent = 'Salvar Alterações';
+  document.getElementById('nf-f-id').value = data.id;
+  document.getElementById('nf-f-cliente').value = data.cliente||'';
+  document.getElementById('nf-f-numero').value = data.nf_numero||'';
+  document.getElementById('nf-f-data-emissao').value = data.data_emissao||'';
+  document.getElementById('nf-f-tipo').value = data.tipo_nota||'Venda';
+  document.getElementById('nf-f-descricao').value = data.descricao||'';
+  document.getElementById('nf-f-qtd').value = data.qtd_entregue??'';
+  // Formata valor para máscara
+  if(data.valor != null){
+    const v = data.valor.toFixed(2).replace('.',',').replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+    document.getElementById('nf-f-valor').value = v;
+  } else {
+    document.getElementById('nf-f-valor').value = '';
+  }
+  document.getElementById('nf-f-empresa').value = data.empresa||'BeaZ';
+  document.getElementById('nf-f-num-pedido').value = data.num_pedido||'';
+  document.getElementById('nf-modal-overlay').classList.add('open');
+}
+function closeNFModal(){
+  document.getElementById('nf-modal-overlay').classList.remove('open');
+  document.getElementById('nf-save-feedback').style.display='none';
+}
+
+document.getElementById('nf-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('nf-f-id').value;
+  const feedback = document.getElementById('nf-save-feedback');
+  const saveBtn = document.getElementById('nf-btn-save');
+  const payload = {
+    cliente: document.getElementById('nf-f-cliente').value.trim()||null,
+    nf_numero: document.getElementById('nf-f-numero').value.trim()||null,
+    data_emissao: document.getElementById('nf-f-data-emissao').value||null,
+    tipo_nota: document.getElementById('nf-f-tipo').value||null,
+    descricao: document.getElementById('nf-f-descricao').value.trim()||null,
+    qtd_entregue: document.getElementById('nf-f-qtd').value ? parseFloat(document.getElementById('nf-f-qtd').value) : null,
+    valor: parseMoeda(document.getElementById('nf-f-valor').value),
+    empresa: document.getElementById('nf-f-empresa').value||null,
+    num_pedido: document.getElementById('nf-f-num-pedido').value.trim()||null,
+  };
+  saveBtn.disabled = true; saveBtn.textContent = 'Salvando...';
+  let error;
+  if(id){ ({error} = await db.from('notas_fiscais').update(payload).eq('id', id)); }
+  else { ({error} = await db.from('notas_fiscais').insert(payload)); }
+  saveBtn.disabled = false; saveBtn.textContent = id ? 'Salvar Alterações' : 'Salvar NF';
+  if(error){
+    feedback.textContent = 'Erro ao salvar: '+error.message; feedback.style.color='var(--danger)'; feedback.style.display='block';
+    return;
+  }
+  feedback.textContent = 'Salvo com sucesso!'; feedback.style.color='var(--ok)'; feedback.style.display='block';
+  setTimeout(() => {
+    closeNFModal();
+    loadDashboard();
+    if(document.getElementById('tab-notas').classList.contains('active')) loadNotasFiscais();
   }, 700);
 });
 
