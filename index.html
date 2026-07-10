@@ -202,7 +202,7 @@
 
   /* Footer */
   footer{ border-top:1px solid var(--grid-line); padding:20px 28px; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--text-muted); font-size:12px; }
-  footer img{ height:20px; width:auto; }
+  footer img{ height:44px; width:auto; }
 </style>
 </head>
 <body>
@@ -323,6 +323,7 @@
         <div class="table-controls">
           <input type="text" class="search-input" id="bd-search-input" placeholder="Buscar cliente ou nº pedido...">
           <button class="btn-ghost" id="bd-btn-cores">Ativar Cores</button>
+          <button class="btn-ghost" onclick="exportarCSV()" style="border-color:var(--ok); color:var(--ok);">⬇ Exportar CSV</button>
           <button class="btn-add" id="bd-btn-add-projeto">+ Novo Projeto</button>
         </div>
       </div>

@@ -250,9 +250,18 @@ function renderKPIs(projetosFiltradosCruzado, nfsFiltradasCruzado){
     : `${pctVariacao>=0?'▲ +':'▼ '}${pctVariacao.toFixed(1)}% · ${diferencaReais>=0?'+':''}${formatCurrency(diferencaReais)} vs ${periodoLabel}/2025`;
   const variacaoCor = pctVariacao === null ? 'var(--text-muted)' : (pctVariacao>=0 ? 'var(--ok)' : 'var(--danger)');
 
+  // ---- Faturamento médio mensal 2026 (meses com faturamento > 0) ----
+  const mesesComFaturamento2026 = Object.values(faturamentoPorMes2026).filter(v => v > 0).length;
+  const faturamentoMedioMensal2026 = mesesComFaturamento2026 > 0 ? valorTotalAno2026 / mesesComFaturamento2026 : 0;
+
+  // ---- Clientes ativos 2026 (com ao menos 1 NF emitida) ----
+  const clientesAtivos2026 = new Set(nfs2026.map(n => n.cliente).filter(Boolean)).size;
+
   document.getElementById('kpi-grid').innerHTML = `
     ${kpiCardSub(`Faturamento Acumulado 2026 (${periodoLabel})`, formatCurrency(valorPeriodo2026), variacaoTexto, variacaoCor)}
     ${kpiCard(labelMesCard, formatCurrency(faturadoMesReferencia), null, 'var(--accent)')}
+    ${kpiCard('Faturamento Médio Mensal 2026', formatCurrency(faturamentoMedioMensal2026), `Baseado em ${mesesComFaturamento2026} mês${mesesComFaturamento2026!==1?'es':''} com faturamento`, 'var(--ok)')}
+    ${kpiCard('Clientes Ativos 2026', clientesAtivos2026.toLocaleString('pt-BR'), 'Com ao menos 1 NF emitida', 'var(--ok)')}
     ${kpiCard('Projetos Atrasados 2026', atrasados.toLocaleString('pt-BR'), null, 'var(--danger)')}
     ${kpiCard('Valor em Aberto 2026 (a faturar)', formatCurrency(valorEmAberto), null, 'var(--warn)')}
   `;
@@ -421,12 +430,21 @@ function renderMensalComparativoChart(nfs){
    RANKINGS (lista com scroll, clicável para filtrar cruzado)
    ============================================================ */
 function renderRankingClientes(nfsFiltradasCruzado){
+  // Ranking baseado em NFs de 2026 (faturamento real)
   const nfs2026 = allNFs.filter(n => anoDe(n.data_emissao) === 2026 && (!filtro.cliente || n.cliente === filtro.cliente));
   const porCliente = {};
   nfs2026.forEach(n => {
     const c = n.cliente || 'Sem cliente';
     porCliente[c] = (porCliente[c]||0) + (n.valor||0);
   });
+
+  // Inclui também projetos de 2026 com valor que não aparecem nas NFs (novos lançamentos)
+  const projetos2026 = allProjetos.filter(p => anoDe(p.data_pedido) === 2026 && (!filtro.cliente || p.cliente === filtro.cliente));
+  projetos2026.forEach(p => {
+    const c = p.cliente || 'Sem cliente';
+    if(!porCliente[c] && p.valor) porCliente[c] = 0; // garante que aparece mesmo sem NF
+  });
+
   const totalGeral = Object.values(porCliente).reduce((s,v)=>s+v,0);
   let rows = Object.entries(porCliente).map(([cliente,total]) => ({ cliente, total, pct: totalGeral>0? total/totalGeral*100 : 0 }));
   rows.sort((a,b) => b.total-a.total);
@@ -812,8 +830,9 @@ function renderBaseDados(){
   tbody.innerHTML = rows.map(p => `
     <tr data-id="${p.id}" class="${corClasse(p.status)}">
       <td>
-        <button class="edit-pencil" onclick="toggleRowEdit(${p.id}, this)" title="Editar linha">\u270e</button>
-        <span class="save-indicator">\u2713 salvo</span>
+        <button class="edit-pencil" onclick="toggleRowEdit(${p.id}, this)" title="Editar linha">✎</button>
+        <button class="edit-pencil" onclick="deleteRow(${p.id})" title="Apagar lançamento" style="margin-left:4px; color:var(--danger); border-color:var(--danger);">🗑</button>
+        <span class="save-indicator">✓ salvo</span>
       </td>
       <td><input class="inline-input" disabled data-field="cliente" value="${escapeHtml(p.cliente||'')}"></td>
       <td><input class="inline-input" disabled data-field="num_pedido" value="${escapeHtml(p.num_pedido||'')}"></td>
@@ -878,9 +897,38 @@ async function saveRow(id, tr, btn){
   if(idx > -1) bdAllRows[idx] = { ...bdAllRows[idx], ...payload };
 }
 
-/* ============================================================
-   MODAL DE CADASTRO/EDIÇÃO (compartilhado pelas duas abas)
-   ============================================================ */
+async function deleteRow(id){
+  if(!confirm('Tem certeza que deseja apagar este lançamento? Esta ação não pode ser desfeita.')) return;
+  const { error } = await db.from('projetos').delete().eq('id', id);
+  if(error){ alert('Erro ao apagar: ' + error.message); return; }
+  // Remove da lista local e atualiza a tela
+  bdAllRows = bdAllRows.filter(r => r.id !== id);
+  allProjetos = allProjetos.filter(r => r.id !== id);
+  renderBaseDados();
+  renderAll(); // atualiza gráficos e KPIs
+}
+
+function exportarCSV(){
+  if(!bdAllRows || bdAllRows.length === 0){ alert('Não há dados para exportar.'); return; }
+  const campos = ['id','cliente','num_pedido','data_pedido','solicitante','descricao_empresa','qtd_pedido','data_entrega','status','valor','empresa','nf_numero_original'];
+  const cabecalho = ['ID','Cliente','Nº Pedido','Data Pedido','Solicitante','Descrição (Empresa)','Qtd Pedido','Data Entrega','Status','Valor (R$)','Empresa','NF'];
+  const linhas = [cabecalho.join(';')];
+  bdAllRows.forEach(p => {
+    const linha = campos.map(c => {
+      const v = p[c] ?? '';
+      return `"${String(v).replace(/"/g,'""')}"`;
+    });
+    linhas.push(linha.join(';'));
+  });
+  const csvContent = '\uFEFF' + linhas.join('\n'); // BOM para Excel reconhecer UTF-8
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `projetos_beaz_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 const modalOverlay = document.getElementById('modal-overlay');
 const projetoForm = document.getElementById('projeto-form');
 document.getElementById('btn-add-projeto').addEventListener('click', () => openNewModal());
